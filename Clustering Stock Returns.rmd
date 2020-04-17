@@ -1,0 +1,192 @@
+---
+title: "Clustering Stock Returns"
+author: "Suzana Iacob"
+date: "01/12/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE, message=FALSE)
+library(tidyverse)
+library(tm) 
+library(SnowballC) 
+library(rpart) 
+library(rpart.plot) 
+library(randomForest)
+```
+
+# Problem statement
+
+We look at a portfolio of stocks aiming to find a diversification strategy. The data contains monthly returns from some stocks among the S&P500 from March 2006 through February 2016.
+
+```{r }
+data = read.csv("returns.csv")
+returns = data[,3:122]
+```
+
+# Hierarchical Clustering
+
+We cluster the data using hierarchical clustering, using the Euclidean distance and the four cluster link- age metrics (single linkage, complete linkage, average linkage, and Ward D2 linkage). We plot the resulting dendograms
+
+```{r}
+d <- dist(returns) 
+class(d)
+```
+
+```{r}
+hclust.mod1 <- hclust(d, method="single")
+par(mar = c(1,1,1,1))
+plot(hclust.mod1, labels=F, ylab="Dissimilarity", xlab = "", sub = "") 
+```
+
+```{r}
+hclust.mod2 <- hclust(d, method="complete")
+par(mar = c(1,1,1,1))
+plot(hclust.mod2, labels=F, ylab="Dissimilarity", xlab = "", sub = "") 
+```
+
+```{r}
+hclust.mod3 <- hclust(d, method="average")
+par(mar = c(1,1,1,1))
+plot(hclust.mod3, labels=F, ylab="Dissimilarity", xlab = "", sub = "") 
+```
+
+
+```{r}
+hclust.mod4 <- hclust(d, method="ward.D2")
+par(mar = c(1,1,1,1))
+plot(hclust.mod4, labels=F, ylab="Dissimilarity", xlab = "", sub = "") 
+
+```
+
+# Scree Plot for deciding the number of clusters
+
+```{r}
+hc.dissim <- data.frame(k = seq_along(hclust.mod4$height),  
+                        dissimilarity = rev(hclust.mod4$height)) 
+head(hc.dissim)
+```
+
+```{r}
+plot(hc.dissim$k, hc.dissim$dissimilarity, type="l")
+```
+
+```{r}
+par(mar = c(4,1,1,1))
+plot(hc.dissim$k, hc.dissim$dissimilarity, type="l", xlim=c(0,40))
+axis(side = 1, at = 1:10)
+```
+
+We want to choose a number of clusters where the line "pivots", which can be argued happens from 3 to 15 approximately. We also want a small number of clusters so that it is interpretable. We choose 8.
+
+# Analysing the clusters
+
+We look at the number of companies in each cluster from each industry sector
+
+```{r}
+h.clusters <- cutree(hclust.mod4, 8)
+table(h.clusters, data$Industry) 
+```
+
+We see here how many companies we have per cluster per industry. Cluster 1 has a little of everything, cluster 2 has more Consumer Discretionary and Financials. Cluster 7 has almost exclusively Consumer Discretionary, while cluster 8 Financials.
+
+```{r, include=FALSE}
+reduced = returns %>% select(avg200801, avg200802, avg200803, avg200804, avg200805, avg200806, avg200807, avg200808,
+                   avg200809, avg200810, avg200811, avg200812, 
+                   avg200901, avg200902, avg200903, avg200904, avg200905, avg200906, avg200907, avg200908,
+                   avg200909, avg200910, avg200911, avg200912, 
+                   avg201001, avg201002, avg201003, avg201004, avg201005, avg201006, avg201007, avg201008,
+                   avg201009, avg201010, avg201011, avg201012)
+avg_returns = aggregate(reduced, by=list(h.clusters), mean) %>% select(-Group.1)
+avg_returns
+```
+
+We plot the returns.
+
+```{r, include=FALSE}
+transposed = data.frame(t(avg_returns))
+transposed$month = row.names(transposed)
+transposed
+```
+```{r}
+ggplot(data=transposed, aes(x=month, group=1)) +
+  geom_line(aes(y=X1),lwd=1, color = "black") +
+  geom_line(aes(y=X2),lwd=1, color = "blue") +
+  geom_line(aes(y=X3),lwd=1, color = "orange") +
+  geom_line(aes(y=X4),lwd=1, color = "red") +
+  geom_line(aes(y=X5),lwd=1, color = "purple") +
+  geom_line(aes(y=X6),lwd=1, color = "yellow") +
+  geom_line(aes(y=X7),lwd=1, color = "cyan") +
+  geom_line(aes(y=X8),lwd=1, color = "brown") +
+  theme_bw() +
+  xlab("Month") +
+  ylab("Returns") + theme(axis.text.x=element_text(angle=90)) 
+```
+
+We see some clusters are much more volatile than others such as cluster 5 (the purple line) which only has one stock. This is a great argument for portfolio deiversification. 
+Overall the stocks move in the same way based on market movements. 
+
+Average returns by cluster in Oct 2008  - all clusters underperform (probably related to the financial crisis)
+```{r}
+avg_returns$avg200810
+```
+
+Average returns by cluster  March 2009 - all clusters give positive returns.
+```{r}
+avg_returns$avg200903
+```
+
+# K-means algorithm
+
+```{r}
+set.seed(177)
+km <- kmeans(returns, centers = 8, iter.max=100) 
+km.centroids <- km$centers
+km.clusters <- km$cluster
+table(km.clusters)
+```
+
+The clusters are somewhat similar, we have one cluster with 142 observations and one with 2 ( verus 183 and 1 in hierarchical clustering). But we see that the observations are more dispersed within the clusters, if in hierarchincal we had some very large and some very small clusters, here they are more homogenuous.
+
+
+```{r}
+km$tot.withinss 
+```
+
+```{r}
+table(km.clusters, data$Industry) 
+```
+ When visualising per industry, we find cluster 3 with Information Technology and Industrials, clusters 7 and 8 with a little of everything and cluster 2 with energy. This has both similarities and differences to hierarchical clustering. Here the clusters are more mixed.
+ 
+```{r}
+avg_returns2 = aggregate(reduced, by=list(km.clusters), mean) %>% select(-Group.1)
+transposed2 = data.frame(t(avg_returns2))
+transposed2$month = row.names(transposed2)
+ggplot(data=transposed2, aes(x=month, group=1)) +
+  geom_line(aes(y=X1),lwd=1, color = "black") +
+  geom_line(aes(y=X2),lwd=1, color = "blue") +
+  geom_line(aes(y=X3),lwd=1, color = "orange") +
+  geom_line(aes(y=X4),lwd=1, color = "red") +
+  geom_line(aes(y=X5),lwd=1, color = "yellow") +
+  geom_line(aes(y=X6),lwd=1, color = "purple") +
+  geom_line(aes(y=X7),lwd=1, color = "cyan") +
+  geom_line(aes(y=X8),lwd=1, color = "brown") +
+  theme_bw() +
+  xlab("Month") +
+  ylab("Returns") + theme(axis.text.x=element_text(angle=90)) 
+```
+The plots are very similar to hierarchincal clustering.
+
+Average returns by cluster in Oct 2008  - all clusters underperform (probably related to the financial crisis)
+```{r}
+avg_returns2$avg200810
+```
+Average returns by cluster  March 2009 - all clusters give positive returns.
+```{r}
+avg_returns2$avg200903
+```
+
+## Discussion
+
+No matter how we cluster the stocks, a mixed portfolio will be stable over time, while a more specialized selection may give higher returns but will also incur high risks. As a portfolio manager, it depends on the risk apetitie of the client to decide the best strategy for investment. The stock that stands our in cluster 5 (hierarchcal) is a financial company and it significantly outperforms the market in 2009, but has been stable since. Portfolio managers should not rely solely on this analysis and they require company-specific and industry specific knowledge. 
+
