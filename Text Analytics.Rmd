@@ -1,0 +1,212 @@
+---
+title: "Text Analytics - Predicting AirBnB review scores"
+author: "Suzana Iacob"
+date: "01/12/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE, message=FALSE)
+library(tidyverse)
+library(tm) 
+library(SnowballC) 
+library(rpart) 
+library(rpart.plot) 
+library(randomForest)
+```
+
+## Data Exploration
+
+The dataset is from AirBnb and contains ratings and reviews from New York between March 2011 and March 2018. We will use NLP techniques to process and predict the ratings. 
+
+```{r}
+reviews = read.csv("airbnb-small.csv", stringsAsFactors = F)
+reviews$X = NULL
+table(reviews$review_scores_rating)
+```
+
+We see above the number of reviews for each rating. And the average length:
+```{r}
+one = reviews  %>% filter(review_scores_rating == 1)
+two = reviews  %>% filter(review_scores_rating == 2)
+three = reviews  %>% filter(review_scores_rating == 3)
+four = reviews  %>% filter(review_scores_rating == 4)
+five = reviews  %>% filter(review_scores_rating == 5)
+sum(nchar(reviews$comments))/nrow(reviews)
+sum(nchar(one$comments))/nrow(one)
+sum(nchar(two$comments))/nrow(two)
+sum(nchar(three$comments))/nrow(three)
+sum(nchar(four$comments))/nrow(four)
+sum(nchar(five$comments))/nrow(five)
+```
+
+Many reviews have positive ratings. The reviewes are mixed length, some very short, some longer. We would expect a very negative review to be long, but also a very positive one could be if the tenant was extremely satisfied. 
+
+## Corpus processing
+
+```{r}
+corpus = Corpus(VectorSource(reviews$comments)) 
+corpus = tm_map(corpus, tolower)
+corpus = tm_map(corpus, removePunctuation)
+corpus = tm_map(corpus, removeWords, stopwords("english")) 
+corpus = tm_map(corpus, removeWords, c("airbnb", "next", "for", "while"))
+corpus = tm_map(corpus, stemDocument)
+```
+
+Frequencies
+```{r}
+frequencies = DocumentTermMatrix(corpus)
+sparse = removeSparseTerms(frequencies, 0.99)
+```
+
+Most reviews are positive
+```{r}
+reviews$positive = as.factor(reviews$review_scores_rating > 3)
+table(reviews$positive)
+```
+
+Document term matrix
+```{r}
+document_terms = as.data.frame(as.matrix(sparse))
+ncol(document_terms)
+document_terms$positive = reviews$positive
+document_terms$review_length = nchar(reviews$comments)
+```
+
+How many words in the corpus: 404
+
+Training and test set.
+```{r}
+split1 = (reviews$date < "2017-12-31")
+split2 = (reviews$date  >= "2018-01-01")
+train = document_terms[split1,]
+test = document_terms[split2,]
+table(train$positive)
+table(test$positive)
+```
+The proportion of positive/negative from the original is preserved in the train and test. The prediction problem will be quite difficult since the overwhelming majority is positive reviews, so we will have a high accuracy by always predicting positive. This is not very helpful, we would like to accurately detect the negative ones.
+
+The data processing cut the majority (99%) of the words in our set. The remaining words are usually two types: negative/positive classifiers (good, issue, kind) or booking-specific things (neighborhood, room, respond). This is very interesting because 1) **the prediction problem becomes difficult since "room" may be great in one property and bad in another** and 2) if we were to look at a specific property along our prediction we could tell why that property receives positive and negative reviews based on the words that are predictors.
+
+
+## Preicting using Decision Trees
+
+```{r}
+tree1 = rpart(positive ~., data=train,cp=0.01)
+prp(tree1)
+```
+
+```{r}
+tree2 = rpart(positive ~., data=train,cp=0.0005)
+prp(tree2)
+```
+
+
+```{r}
+tree3 = rpart(positive ~., data=train,cp=0.02)
+prp(tree3)
+```
+
+The three trees are similar at the beginning but have different complexities. We note the most important splits are shower (if shower is mentioned more than 2 times the review is negative which makes sense as people are more linkely to be dissatisfied rather than satisfied with basic amenities like the shower). Other key predictors are bathroom, sleep and other such property-related words.
+
+## Random Forest
+
+```{r}
+rf = randomForest(positive ~ ., data = train)
+```
+
+```{r}
+importance.rf <- data.frame(imp=importance(rf))
+importance.rf$position <- seq(from = 1, to = 405, by = 1)
+importance.rf.ordered <- importance.rf[order(-importance.rf$MeanDecreaseGini), ,drop = FALSE]
+head(importance.rf.ordered,7) 
+```
+Review length is the most important feature. Ideally we should fit another model to see if longer reviews are more positive or more negative because it is not intuitive and we could argue both ways. However we know from the inital analysis that negative reviews are longer so we interpret this accordingly. 
+
+Shower, clean and host are the stronger word predictors, which intuitively makes sense, customers want a communicative host and that is one of the aspects that determine the quality of their stay. 
+
+As expected we see sentiment classifiers (didn't, great) as strong predictors of sentiment. We also see booking-specific words like shower. We infer that if someone mentions the shower they did not have a good experience (people are less likely to say "the shower was great" vs "the shower didn't work").
+
+
+## Baseline Model
+A baseline model always predicts a positive review since this is the most common.
+```{r}
+table(test$positive)
+```
+```{r}
+accuracy_baseline_train = 944/nrow(test)
+accuracy_baseline_train
+```
+
+True positive rate
+```{r}
+tpr_baseline_test = 1
+fpr_baseline = 1
+```
+
+
+```{r}
+predict_tree1 = predict(tree1, newdata = test,  type="class")
+predict_tree2 = predict(tree2, newdata = test, type="class")
+predict_tree3 = predict(tree3, newdata = test, type="class")
+predict_rf = predict(rf, newdata = test,type="class")
+
+table(predict_tree1, test$positive)
+table(predict_tree2, test$positive)
+table(predict_tree3, test$positive)
+table(predict_rf, test$positive)
+```
+
+Accuracy:
+```{r}
+accuracy_tree1 = (939+5)/nrow(test)
+accuracy_tree2 = (926+7)/nrow(test)
+accuracy_tree3 = (944+1)/nrow(test)
+accuracy_rf = (943+1)/nrow(test)
+
+print(accuracy_tree1)
+print(accuracy_tree2)
+print(accuracy_tree3)
+print(accuracy_rf)
+```
+
+True positive rate:
+```{r}
+tpr_tree1 = 939/(944)
+tpr_tree2 = 926/(944)
+tpr_tree3 = 944/(944)
+tpr_rf = 943/(944)
+
+print(tpr_tree1)
+print(tpr_tree2)
+print(tpr_tree3)
+print(tpr_rf)
+```
+
+False positive rate:
+```{r}
+fpr_tree1 = 36/41
+fpr_tree2 = 34/41
+fpr_tree3 = 40/41
+fpr_rf = 40/41
+
+print(fpr_tree1)
+print(fpr_tree2)
+print(fpr_tree3)
+print(fpr_rf)
+```
+
+As expected, the baseline performs very well, one model performs worse than the baseline, and the other models perform similar or slightly above the baseline. We find that a CART that is very complex (tree2) performes the best because it predicts the most true negatives.
+
+Despite high accuracy, these are not very encouraging results, simply because the proportion of positives is so high. We may consider sub-sampling to exclude some of the positive reviews and have a more balanced dataset, or include a loss matrix and force the model to predict negative reviews. 
+
+As we mentioned in the beginning, most words are not good predictors because the booking-specific words (neighborhood, room, respond) can be positive or negative depending on which review we look at. What we are doing is building a sentiment classifier and relying on our model to learn words like "good", "issue", etc.
+
+As an extention we should consider
+** using a sentiment dictionary which already has all these positive and negative words and look for those in our document matrix
+** exclude 3 star reviews. They are not really positive, and they are not really negative. They are also not neutral (so including a 3rd class would not help). This is because neutral language typically expresses no feelings, but in reviews 3-stars mean both positive and negative aspects, which may confuse the model. We might get better accuracy if we exclude them.
+
+We should also think about the business scenario for why we are predicting positive/negative. On Airbnb reviews always come with raiting, which means we will never get just the review text and no rating. Perhaps we can use the model to predict whether a comment is positive/negative on some other hotel review website. My suggestion is to use the model to look at an individual Airbnb and trying to predict positive and negative aspect of that particular house using the model. Airbnb could then make suggestions to hosts on what to improve.
+
+
+
